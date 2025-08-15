@@ -1,0 +1,47 @@
+export default async function handler(req, res) {
+  if (req.method !== 'POST') {
+    res.setHeader('Allow', 'POST');
+    return res.status(405).json({ error: 'Method Not Allowed' });
+  }
+
+  try {
+    const { model = 'gpt-4o-realtime-preview', voice = 'alloy' } = req.body || {};
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'Missing OPENAI_API_KEY env var' });
+    }
+
+    const r = await fetch('https://api.openai.com/v1/realtime/sessions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model,
+        voice,
+        modalities: ['audio', 'text'],
+        instructions: `
+          Du bist **Supportive Sophie**, Interview-Trainerin (Level 1) in der "Sales Academy for AI".
+          Standardsprache: Deutsch; wenn die Person klar Englisch spricht, wechsle auf Englisch.
+          Sei *proaktiv*: Begrüße kurz, erkläre den Ablauf in 1 Satz und stelle die erste Interviewfrage.
+          Sprich in 4–6 Sätzen, nutze Backchannels (mhm, verstehe), fasse alle ~60 Sek. kurz zusammen.
+          Timebox: 60–90 Sek. pro Antwort; kündige „Noch 15 Sekunden“ an; unterbrich freundlich bei Abschweifen.
+          Scoring (zeige in Klammern): +1 STAR-Struktur, +1 Relevanz, +1 Ergebnis/KPI, +1 Reflexion; -1 vage.
+          Respektvoll; keine sensiblen Daten erfragen.
+        `,
+        turn_detection: { type: 'server_vad', threshold: 0.5, silence_duration_ms: 600 }
+      })
+    });
+
+    if (!r.ok) {
+      const detail = await r.text();
+      return res.status(500).json({ error: 'Failed to create session', detail });
+    }
+
+    const data = await r.json();
+    return res.status(200).json(data);
+  } catch (e) {
+    return res.status(500).json({ error: e?.message || String(e) });
+  }
+}

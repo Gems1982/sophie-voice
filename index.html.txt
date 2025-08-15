@@ -1,0 +1,124 @@
+
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Supportive Sophie — Voice Embed</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }
+    .row { display:flex; gap:12px; align-items:center; margin: 8px 0; flex-wrap: wrap; }
+    button { padding: 8px 12px; }
+    #log { white-space: pre-wrap; border: 1px solid #ddd; padding: 12px; border-radius: 8px; height: 320px; overflow:auto; }
+    .user { color:#0b5; }
+    .ai { color:#06c; }
+    .sys { color:#888; font-style: italic; }
+  </style>
+</head>
+<body>
+  <h1>Supportive Sophie — Sprachtraining (Realtime)</h1>
+  <div class="row">
+    <button id="connectBtn">Verbinden & sprechen</button>
+    <button id="hangupBtn" disabled>Auflegen</button>
+    <label><input type="checkbox" id="muteToggle" /> Stumm</label>
+    <select id="voice">
+      <option value="alloy" selected>alloy</option>
+      <option value="verse">verse</option>
+      <option value="aria">aria</option>
+    </select>
+  </div>
+  <audio id="assistantAudio" autoplay></audio>
+  <div id="log" aria-live="polite"></div>
+
+  <script>
+    const connectBtn = document.getElementById('connectBtn');
+    const hangupBtn = document.getElementById('hangupBtn');
+    const muteToggle = document.getElementById('muteToggle');
+    const voiceSelect = document.getElementById('voice');
+    const logEl = document.getElementById('log');
+    const audioEl = document.getElementById('assistantAudio');
+
+    let pc, micStream, dc;
+
+    function log(kind, text) {
+      const div = document.createElement('div');
+      div.className = kind;
+      div.textContent = text;
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    async function start() {
+      connectBtn.disabled = true;
+      log('sys', '🎙️ Mikrofon wird angefragt …');
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      pc = new RTCPeerConnection();
+      pc.ontrack = (e) => { audioEl.srcObject = e.streams[0]; };
+      micStream.getTracks().forEach(t => pc.addTrack(t, micStream));
+
+      const offer = await pc.createOffer({ offerToReceiveAudio: true });
+      await pc.setLocalDescription(offer);
+
+      const r = await fetch('/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-4o-realtime-preview', voice: voiceSelect.value })
+      });
+      const session = await r.json();
+      if (!session?.client_secret?.value) {
+        log('sys', '❌ Session fehlgeschlagen. Prüfe OPENAI_API_KEY auf Vercel.');
+        connectBtn.disabled = false; return;
+      }
+
+      const sdpResp = await fetch(`https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${session.client_secret.value}`,
+          'Content-Type': 'application/sdp',
+          'Accept': 'application/sdp'
+        },
+        body: offer.sdp
+      });
+      const answerSDP = await sdpResp.text();
+      await pc.setRemoteDescription({ type: 'answer', sdp: answerSDP });
+
+      const dc = pc.createDataChannel('oai-events');
+      dc.onopen = () => {
+        log('sys', '🔌 Verbunden. Sophie spricht gleich.');
+        dc.send(JSON.stringify({
+          type: 'response.create',
+          response: { instructions: 'Starte jetzt das Gespräch: Begrüße kurz, erkläre den Ablauf in 1 Satz und stelle die erste Interviewfrage (Deutsch).' }
+        }));
+      };
+      dc.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'response.output_text.delta') log('ai', msg.delta);
+        } catch {}
+      };
+
+      hangupBtn.disabled = false;
+    }
+
+    function stop() {
+      hangupBtn.disabled = true;
+      connectBtn.disabled = false;
+      if (pc) {
+        pc.getSenders().forEach(s => s.track?.stop());
+        pc.close();
+      }
+      if (micStream) micStream.getTracks().forEach(t => t.stop());
+      log('sys', '👋 Verbindung beendet.');
+    }
+
+    connectBtn.onclick = start;
+    hangupBtn.onclick = stop;
+    muteToggle.onchange = () => {
+      if (!micStream) return;
+      micStream.getAudioTracks().forEach(t => t.enabled = !muteToggle.checked);
+      log('sys', muteToggle.checked ? '🔇 Mikrofon stumm' : '🔊 Mikrofon aktiv');
+    };
+  </script>
+</body>
+</html>
